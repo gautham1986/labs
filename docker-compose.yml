@@ -1,0 +1,71 @@
+# Practice environment. Use the Makefile: `make up`, `make shell`, `make down`.
+#
+#   lab    - your main box (all labs run here)
+#   node1  - extra hosts for multi-node capstone projects (start with `make fleet`)
+#   node2
+#
+# systemd runs as PID 1 inside each container, which needs privileged mode and the
+# host cgroup namespace. This is a throwaway practice box - do not reuse these settings
+# for production containers.
+
+name: linux-sre-lab
+
+x-node: &node
+  build:
+    context: ./env
+    args:
+      LAB_UID: ${LAB_UID:-1000}
+      LAB_GID: ${LAB_GID:-1000}
+  image: linux-sre-lab:latest
+  privileged: true
+  cgroup: host
+  tmpfs:
+    - /run
+    - /run/lock
+    - /tmp:exec,mode=1777
+  volumes:
+    - /sys/fs/cgroup:/sys/fs/cgroup:rw
+  networks: [labnet]
+  restart: unless-stopped
+
+services:
+  lab:
+    <<: *node
+    container_name: sre-lab
+    hostname: lab
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      - ./:/lab                          # this repo - edit files from your host editor
+      - lab-home:/home/learner           # your home dir survives `make down`
+    ports:
+      - "127.0.0.1:8080:80"              # reach nginx labs from your host browser
+    networks:
+      labnet:
+        ipv4_address: 10.77.0.10
+
+  node1:
+    <<: *node
+    container_name: sre-node1
+    hostname: node1
+    profiles: [fleet]
+    networks:
+      labnet:
+        ipv4_address: 10.77.0.11
+
+  node2:
+    <<: *node
+    container_name: sre-node2
+    hostname: node2
+    profiles: [fleet]
+    networks:
+      labnet:
+        ipv4_address: 10.77.0.12
+
+networks:
+  labnet:
+    ipam:
+      config:
+        - subnet: 10.77.0.0/24
+
+volumes:
+  lab-home:

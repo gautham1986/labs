@@ -1,0 +1,4 @@
+# Repo-wide shellcheck settings (make lint)
+# SC2088: "~/answers/..." appears in human-readable check descriptions on purpose
+disable=SC2088
+external-sources=true

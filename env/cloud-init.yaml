@@ -1,0 +1,16 @@
+#cloud-config
+# Multipass (or any cloud VM) alternative to Docker.
+#
+#   multipass launch 24.04 --name sre-lab --cpus 2 --memory 2G --disk 15G \
+#       --cloud-init env/cloud-init.yaml
+#   multipass mount . sre-lab:/lab
+#   multipass exec sre-lab -- sudo LAB_USER=ubuntu bash /lab/env/bootstrap.sh /lab
+#   multipass shell sre-lab
+#
+# cloud-init only does the bits that don't need the repo; bootstrap.sh does the rest
+# once the repo is mounted.
+package_update: true
+packages:
+  - git
+  - make
+timezone: UTC

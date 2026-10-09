@@ -1,0 +1,11 @@
+{
+  "generated": "2026-09-30T12:00:00Z",
+  "cluster": "prod-eu-1",
+  "services": [
+    {"name": "web", "status": "running", "replicas": 4, "version": "2.3.1", "owner": "frontend"},
+    {"name": "api", "status": "running", "replicas": 3, "version": "1.4.2", "owner": "backend"},
+    {"name": "worker", "status": "degraded", "replicas": 1, "version": "1.4.0", "owner": "backend"},
+    {"name": "cron", "status": "stopped", "version": "0.9.9", "owner": "platform"},
+    {"name": "search", "status": "running", "replicas": 2, "owner": "data"}
+  ]
+}

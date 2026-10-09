@@ -1,0 +1,32 @@
+# Full VM alternative to Docker (VirtualBox / libvirt / VMware / Parallels).
+# Use this for the most realistic experience: real kernel, real disks, real reboots.
+#
+#   cd env && vagrant up && vagrant ssh
+#   lab list
+#
+# The repo is synced to /lab. The default `vagrant` user gets the lab tooling.
+
+Vagrant.configure("2") do |config|
+  config.vm.box = "bento/ubuntu-24.04"
+  config.vm.hostname = "lab"
+
+  config.vm.synced_folder "..", "/lab"
+  config.vm.network "forwarded_port", guest: 80, host: 8080, host_ip: "127.0.0.1"
+
+  # Two spare 1 GB disks for the storage labs (VirtualBox only; other providers: add by hand)
+  config.vm.provider "virtualbox" do |vb|
+    vb.memory = 2048
+    vb.cpus = 2
+    vb.name = "linux-sre-lab"
+    (1..2).each do |i|
+      disk = File.join(__dir__, ".vagrant", "disk#{i}.vdi")
+      unless File.exist?(disk)
+        vb.customize ["createhd", "--filename", disk, "--size", 1024]
+      end
+      vb.customize ["storageattach", :id, "--storagectl", "SATA Controller",
+                    "--port", i + 1, "--device", 0, "--type", "hdd", "--medium", disk]
+    end
+  end
+
+  config.vm.provision "shell", inline: "LAB_USER=vagrant bash /lab/env/bootstrap.sh /lab"
+end

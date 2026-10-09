@@ -1,0 +1,341 @@
+#!/usr/bin/env bash
+# lab - run and grade the practice labs in this repo.
+#
+#   lab list                 show all labs and your progress
+#   lab start <id>           build the scenario (system labs) or copy the starter script
+#   lab show <id>            print the lab brief
+#   lab check <id>           grade your work
+#   lab hint <id> [n]        reveal the next hint (or hint n)
+#   lab solution <id>        show the reference solution (try first!)
+#   lab reset <id>           tear down and rebuild the scenario
+#   lab clean <id>           tear down a scenario without rebuilding it
+#   lab progress             progress per level
+#   lab doctor               check that this machine can run the labs
+#   lab path <id>            print the lab's directory
+set -uo pipefail
+
+LAB_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+LAB_WORKSPACE="${LAB_WORKSPACE:-$LAB_ROOT/workspace}"
+LAB_ANSWERS="${LAB_ANSWERS:-$LAB_WORKSPACE/answers}"
+LAB_STATE="${LAB_STATE:-$LAB_WORKSPACE/.state}"
+if [[ $EUID -eq 0 ]]; then
+  LAB_USER="${LAB_USER:-${SUDO_USER:-$(id -un learner 2>/dev/null || echo root)}}"
+else
+  LAB_USER="${LAB_USER:-$(id -un)}"
+fi
+export LAB_ROOT LAB_WORKSPACE LAB_ANSWERS LAB_STATE LAB_USER
+
+# shellcheck source=lib/common.sh
+source "$LAB_ROOT/lib/common.sh"
+
+LEVEL_DIRS=("$LAB_ROOT"/levels/*/)
+SCRIPTING_DIR="$LAB_ROOT/scripting/exercises"
+
+# --- lookup ---------------------------------------------------------------------
+
+find_lab() {  # find_lab <id> -> prints lab dir
+  local id=${1,,} d
+  for d in "$LAB_ROOT"/levels/*/"$id"-*/ "$SCRIPTING_DIR"/"$id"-*/; do
+    [[ -d "$d" ]] && { printf '%s\n' "${d%/}"; return 0; }
+  done
+  return 1
+}
+
+require_lab() {
+  [[ -n "${1:-}" ]] || die "which lab? e.g. lab $CMD b01   (see: lab list)"
+  LAB_DIR=$(find_lab "$1") || die "no lab with id '$1' (see: lab list)"
+  LAB_ID=${1,,}
+  export LAB_ID
+}
+
+is_scripting() { [[ "$1" == "$SCRIPTING_DIR"/* ]]; }
+
+lab_title() {  # first heading, minus the "b01 · " prefix
+  local t
+  t=$(grep -m1 '^# ' "$1/README.md" 2>/dev/null)
+  t=${t#\# }
+  t=${t#*· }
+  printf '%s' "${t//\`/}"
+}
+
+level_name() {  # levels/2-intermediate -> "Level 2 · Intermediate"
+  local b; b=$(basename "$1"); local n=${b%%-*} name=${b#*-}
+  printf 'Level %s · %s' "$n" "${name^}"
+}
+
+# --- progress state -------------------------------------------------------------
+
+mark() {
+  mkdir -p "$LAB_STATE"
+  printf '%s %s %s\n' "$1" "$2" "$(date +%s)" >> "$LAB_STATE/progress"
+}
+
+status_of() {  # passed > started > ""
+  [[ -f "$LAB_STATE/progress" ]] || return 0
+  awk -v id="$1" '$1 == id { if ($2 == "passed") p = 1; else s = 1 }
+                  END { if (p) print "passed"; else if (s) print "started" }' "$LAB_STATE/progress"
+}
+
+status_icon() {
+  case "$1" in
+    passed)  printf '%s✔%s' "$C_GRN" "$C_RST" ;;
+    started) printf '%s•%s' "$C_YEL" "$C_RST" ;;
+    *)       printf '%s·%s' "$C_DIM" "$C_RST" ;;
+  esac
+}
+
+# --- running scenario scripts as root --------------------------------------------
+
+run_root() {  # run_root <script> - runs with the lab environment, as root
+  local envs=(LAB_ROOT="$LAB_ROOT" LAB_ANSWERS="$LAB_ANSWERS" LAB_USER="$LAB_USER"
+              LAB_ID="$LAB_ID" LAB_DIR="$LAB_DIR" NO_COLOR="${NO_COLOR:-}" LAB_DEBUG="${LAB_DEBUG:-}")
+  [[ -t 1 ]] || envs+=(NO_COLOR=1)
+  if [[ $EUID -eq 0 ]]; then
+    env "${envs[@]}" bash "$1"
+  elif command -v sudo >/dev/null; then
+    sudo env "${envs[@]}" bash "$1"
+  else
+    die "need root to run $(basename "$1") and sudo is not installed"
+  fi
+}
+
+ensure_workspace() {
+  mkdir -p "$LAB_ANSWERS" "$LAB_STATE" 2>/dev/null || true
+  # Convenience link: ~/answers -> workspace/answers
+  if [[ $EUID -ne 0 && ! -e "$HOME/answers" && ! -L "$HOME/answers" ]]; then
+    ln -s "$LAB_ANSWERS" "$HOME/answers" 2>/dev/null || true
+  fi
+}
+
+# --- scripting exercises -----------------------------------------------------------
+
+starter_files() { find "$1/starter" -maxdepth 1 -type f 2>/dev/null | sort; }
+work_dir_for()  { printf '%s/scripting/%s' "$LAB_WORKSPACE" "$LAB_ID"; }
+
+# --- commands ----------------------------------------------------------------------
+
+cmd_list() {
+  local filter=${1:-} d lab id st
+  for d in "${LEVEL_DIRS[@]}" "$SCRIPTING_DIR/"; do
+    d=${d%/}
+    if [[ -n "$filter" ]]; then
+      [[ "$d" == *"$filter"* || "$(basename "$d")" == "$filter"* ]] || continue
+    fi
+    if [[ "$d" == "$SCRIPTING_DIR" ]]; then
+      printf '\n%sShell scripting track%s\n' "$C_BLD" "$C_RST"
+    else
+      printf '\n%s%s%s\n' "$C_BLD" "$(level_name "$d")" "$C_RST"
+    fi
+    for lab in "$d"/*/; do
+      [[ -f "$lab/README.md" ]] || continue
+      lab=${lab%/}; id=$(basename "$lab"); id=${id%%-*}
+      st=$(status_of "$id")
+      printf '  %s %s%-4s%s %s\n' "$(status_icon "$st")" "$C_BLD" "$id" "$C_RST" "$(lab_title "$lab")"
+    done
+  done
+  printf '\n%s✔ passed  • started  · not started%s\n' "$C_DIM" "$C_RST"
+}
+
+cmd_show() {
+  require_lab "${1:-}"
+  local f="$LAB_DIR/README.md"
+  if [[ -t 1 ]] && command -v less >/dev/null && (( $(wc -l < "$f") > $(tput lines 2>/dev/null || echo 40) )); then
+    less -FRX "$f"
+  else
+    cat "$f"
+  fi
+}
+
+cmd_start() {
+  require_lab "${1:-}"
+  ensure_workspace
+  if is_scripting "$LAB_DIR"; then
+    local wd f dest; wd=$(work_dir_for); mkdir -p "$wd"
+    while IFS= read -r f; do
+      dest="$wd/$(basename "$f")"
+      if [[ -e "$dest" ]]; then
+        info "keeping your existing $(realpath --relative-to="$PWD" "$dest" 2>/dev/null || echo "$dest")"
+      else
+        cp "$f" "$dest"; chmod +x "$dest"
+        info "created $dest"
+      fi
+    done < <(starter_files "$LAB_DIR")
+    mark "$LAB_ID" started
+    printf '\nEdit the script(s) above, then run %slab check %s%s\n' "$C_BLD" "$LAB_ID" "$C_RST"
+    printf 'Brief: %slab show %s%s\n' "$C_BLD" "$LAB_ID" "$C_RST"
+    return 0
+  fi
+  [[ -f "$LAB_DIR/setup.sh" ]] || die "lab $LAB_ID has no setup.sh"
+  info "Setting up lab $LAB_ID: $(lab_title "$LAB_DIR")"
+  # A new scenario is re-randomized, so old answers would be wrong: park them.
+  local old=("$LAB_ANSWERS/$LAB_ID"[-.]*)
+  if [[ -e "${old[0]}" ]]; then
+    mkdir -p "$LAB_ANSWERS/.previous"
+    mv -f "${old[@]}" "$LAB_ANSWERS/.previous/" 2>/dev/null &&
+      info "moved your previous $LAB_ID answers to ~/answers/.previous/"
+  fi
+  if run_root "$LAB_DIR/setup.sh"; then
+    mark "$LAB_ID" started
+    lab_done_msg "$LAB_ID"
+  else
+    die "setup failed - see the messages above (lab doctor may help)"
+  fi
+}
+
+cmd_check() {
+  require_lab "${1:-}"
+  ensure_workspace
+  local rc
+  printf '%sChecking %s: %s%s\n' "$C_BLD" "$LAB_ID" "$(lab_title "$LAB_DIR")" "$C_RST"
+  if is_scripting "$LAB_DIR"; then
+    local wd; wd=$(work_dir_for)
+    [[ -d "$wd" ]] || die "no work yet - run: lab start $LAB_ID"
+    WORK_DIR="$wd" LAB_ID="$LAB_ID" bash "$LAB_DIR/test.sh"; rc=$?
+  else
+    run_root "$LAB_DIR/check.sh"; rc=$?
+  fi
+  if (( rc == 0 )); then
+    [[ "$(status_of "$LAB_ID")" == passed ]] || printf '%s🎉 Lab %s complete!%s\n' "$C_GRN" "$LAB_ID" "$C_RST"
+    mark "$LAB_ID" passed
+  fi
+  return "$rc"
+}
+
+cmd_hint() {
+  require_lab "${1:-}"
+  local f="$LAB_DIR/hints.md" n total seen_file="$LAB_STATE/hints-$LAB_ID" seen=0
+  if [[ ! -f "$f" ]]; then
+    if is_scripting "$LAB_DIR"; then
+      info "scripting exercises have no hints - the tests are the spec:"
+      echo "    read $LAB_DIR/test.sh"
+      echo "    run  TEST_DEBUG=1 lab check $LAB_ID   (shows each test's output)"
+      return 0
+    fi
+    die "no hints for $LAB_ID - try: lab solution $LAB_ID"
+  fi
+  total=$(awk '/^---[[:space:]]*$/ { n++ } END { print n + 1 }' "$f")
+  [[ -f "$seen_file" ]] && seen=$(cat "$seen_file")
+  n=${2:-$((seen + 1))}
+  (( n > total )) && n=$total
+  (( n < 1 )) && n=1
+  printf '%sHint %d/%d for %s%s\n\n' "$C_BLD" "$n" "$total" "$LAB_ID" "$C_RST"
+  awk -v want="$n" '/^---[[:space:]]*$/ { i++; next } i + 1 == want' "$f"
+  mkdir -p "$LAB_STATE"; (( n > seen )) && echo "$n" > "$seen_file"
+  (( n < total )) && printf '\n%s(next: lab hint %s)%s\n' "$C_DIM" "$LAB_ID" "$C_RST"
+  return 0
+}
+
+cmd_solution() {
+  local yes=0
+  [[ "${1:-}" == -y ]] && { yes=1; shift; }
+  require_lab "${1:-}"
+  if (( ! yes )) && [[ -t 0 ]]; then
+    read -r -p "Peek at the reference solution for $LAB_ID? Struggling is where the learning happens. [y/N] " a
+    [[ "$a" == [yY]* ]] || return 0
+  fi
+  if is_scripting "$LAB_DIR"; then
+    local f
+    for f in "$LAB_DIR"/solution/*; do
+      printf '%s==> %s%s\n' "$C_BLD" "$(basename "$f")" "$C_RST"; cat "$f"; echo
+    done
+  else
+    cat "$LAB_DIR/solution.md"
+  fi
+}
+
+cmd_clean() {
+  require_lab "${1:-}"
+  if is_scripting "$LAB_DIR"; then
+    info "nothing to clean for scripting exercises (your work is in $(work_dir_for))"; return 0
+  fi
+  if [[ -f "$LAB_DIR/cleanup.sh" ]]; then
+    info "Cleaning up lab $LAB_ID"
+    run_root "$LAB_DIR/cleanup.sh"
+  else
+    info "lab $LAB_ID has no cleanup step"
+  fi
+}
+
+cmd_reset() {
+  require_lab "${1:-}"
+  if is_scripting "$LAB_DIR"; then
+    local wd; wd=$(work_dir_for)
+    if [[ -d "$wd" ]]; then
+      local bak; bak="$wd.bak.$(date +%Y%m%d%H%M%S)"
+      mv "$wd" "$bak"; info "moved your old work to $bak"
+    fi
+    cmd_start "$LAB_ID"; return
+  fi
+  cmd_clean "$LAB_ID" && cmd_start "$LAB_ID"
+}
+
+cmd_progress() {
+  local d lab id total passed width=24 filled
+  echo
+  for d in "${LEVEL_DIRS[@]}" "$SCRIPTING_DIR/"; do
+    d=${d%/}; total=0; passed=0
+    for lab in "$d"/*/; do
+      [[ -f "$lab/README.md" ]] || continue
+      id=$(basename "$lab"); id=${id%%-*}; total=$((total + 1))
+      [[ "$(status_of "$id")" == passed ]] && passed=$((passed + 1))
+    done
+    (( total == 0 )) && continue
+    filled=$(( passed * width / total ))
+    local name bar="" rest="" i
+    [[ "$d" == "$SCRIPTING_DIR" ]] && name="Shell scripting" || name=$(level_name "$d")
+    for ((i = 0; i < filled; i++)); do bar+="█"; done
+    for ((i = filled; i < width; i++)); do rest+="░"; done
+    name=${name/·/-}   # ASCII only, so the columns line up in any locale
+    printf '  %-24s %s%s%s%s%s %2d/%d\n' "$name" "$C_GRN" "$bar" "$C_DIM" "$rest" "$C_RST" "$passed" "$total"
+  done
+  echo
+}
+
+cmd_doctor() {
+  local bad=0
+  _ok()  { printf '  %s✔%s %s\n' "$C_GRN" "$C_RST" "$1"; }
+  _no()  { printf '  %s✘%s %s\n' "$C_RED" "$C_RST" "$1"; bad=$((bad + 1)); }
+  _meh() { printf '  %s!%s %s\n' "$C_YEL" "$C_RST" "$1"; }
+  printf '%sLab environment check%s\n' "$C_BLD" "$C_RST"
+  [[ -r /etc/os-release ]] && _ok "OS: $(. /etc/os-release; echo "$PRETTY_NAME")"
+  if [[ $EUID -eq 0 ]] || sudo -n true 2>/dev/null; then _ok "root access (sudo)"; else _no "passwordless sudo for $(id -un)"; fi
+  if has_systemd; then _ok "systemd is PID 1"; else _no "systemd is not running - most intermediate+ labs need it (use make up or a VM)"; fi
+  if [[ -f /sys/fs/cgroup/cgroup.controllers ]]; then _ok "cgroup v2"; else _meh "cgroup v2 not found - lab e04 needs it"; fi
+  if is_container; then _meh "running in a container - fine, but i04 (LVM) and swap topics are more realistic in a VM"; else _ok "running on a VM / bare metal"; fi
+  if [[ -e /dev/loop-control ]]; then _ok "loop devices available"; else _meh "no /dev/loop-control - lab i04 needs loop devices"; fi
+  local missing=() c
+  for c in ss ip curl jq awk sed strace lsof nft nginx logrotate python3 shellcheck rsync crontab; do
+    command -v "$c" >/dev/null || missing+=("$c")
+  done
+  if (( ${#missing[@]} )); then _no "missing tools: ${missing[*]} (run: sudo $LAB_ROOT/env/bootstrap.sh)"; else _ok "all lab tools installed"; fi
+  if curl -fsS -m 5 -o /dev/null https://archive.ubuntu.com 2>/dev/null || curl -fsS -m 5 -o /dev/null http://archive.ubuntu.com 2>/dev/null; then
+    _ok "internet access (package installs work)"
+  else
+    _meh "no internet access - lab b05 (packages) needs it"
+  fi
+  local free_mb; free_mb=$(df -Pm / | awk 'NR == 2 { print $4 }')
+  if (( free_mb > 2048 )); then _ok "disk: ${free_mb} MB free"; else _meh "disk: only ${free_mb} MB free"; fi
+  (( bad == 0 )) && printf '\n%sReady to go.%s Start with: lab start b01\n' "$C_GRN" "$C_RST"
+  return "$bad"
+}
+
+cmd_help() {
+  sed -n '2,/^set -uo/{/^set -uo/d;s/^# \{0,1\}//;p}' "${BASH_SOURCE[0]}"
+}
+
+CMD=${1:-help}; shift || true
+case "$CMD" in
+  list|ls)            cmd_list "$@" ;;
+  start)              cmd_start "$@" ;;
+  show|info|brief)    cmd_show "$@" ;;
+  check|grade)        cmd_check "$@" ;;
+  hint)               cmd_hint "$@" ;;
+  solution|solve)     cmd_solution "$@" ;;
+  reset)              cmd_reset "$@" ;;
+  clean|stop)         cmd_clean "$@" ;;
+  progress|status)    cmd_progress ;;
+  doctor)             cmd_doctor ;;
+  path)               require_lab "${1:-}"; echo "$LAB_DIR" ;;
+  help|-h|--help)     cmd_help ;;
+  *)                  die "unknown command '$CMD' - see: lab help" ;;
+esac

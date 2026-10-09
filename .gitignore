@@ -1,0 +1,7 @@
+# Your personal work - answers, scripts, progress. Commit it to your own fork if you like.
+workspace/*
+!workspace/.gitkeep
+!workspace/README.md
+
+# Vagrant
+env/.vagrant/

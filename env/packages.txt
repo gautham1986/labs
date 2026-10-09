@@ -1,0 +1,96 @@
+# Packages installed into the practice environment (Docker image or VM).
+# One per line; comments allowed. Shared by env/Dockerfile and env/bootstrap.sh.
+#
+# NOTE: `tree` and `ncdu` are deliberately NOT here - lab b05 asks you to install them.
+
+# --- init & core system ---
+systemd
+systemd-sysv
+dbus
+sudo
+locales
+tzdata
+man-db
+manpages
+bash-completion
+less
+vim
+nano
+tmux
+file
+bc
+time
+psmisc
+procps
+util-linux
+coreutils
+findutils
+diffutils
+patch
+
+# --- text & data ---
+gawk
+sed
+grep
+jq
+python3
+python3-yaml
+
+# --- archives & transfer ---
+tar
+gzip
+bzip2
+xz-utils
+zip
+unzip
+rsync
+curl
+wget
+ca-certificates
+openssh-server
+openssh-client
+git
+
+# --- networking ---
+iproute2
+iputils-ping
+dnsutils
+netcat-openbsd
+socat
+tcpdump
+traceroute
+mtr-tiny
+nmap
+nftables
+ethtool
+
+# --- observability & debugging ---
+lsof
+strace
+ltrace
+gdb
+sysstat
+htop
+iotop
+
+# --- services used by labs ---
+cron
+logrotate
+nginx
+prometheus-node-exporter
+
+# --- storage ---
+lvm2
+parted
+fdisk
+e2fsprogs
+xfsprogs
+dosfstools
+acl
+attr
+quota
+
+# --- shell scripting ---
+shellcheck
+bats
+make
